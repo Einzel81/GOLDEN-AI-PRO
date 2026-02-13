@@ -1,220 +1,209 @@
 """
-تحليل بنية السوق (BOS/CHoCH)
-Market Structure Analysis - Break of Structure & Change of Character
+اكتشاف كتل الطلبات (Order Blocks)
+Order Block Detection with mitigation tracking
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
-from enum import Enum
-
-
-class StructureType(Enum):
-    BOS = "break_of_structure"
-    CHOCH = "change_of_character"
 
 
 @dataclass
-class SwingPoint:
-    """نقطة أرجوحة"""
+class OrderBlock:
+    """كتلة طلبات"""
     index: int
-    price: float
-    type: str  # "high" or "low"
+    top: float
+    bottom: float
+    type: str  # "bullish" or "bearish"
+    volume: float
     timestamp: pd.Timestamp
+    active: bool = True
+    mitigation_index: Optional[int] = None
 
 
-class MarketStructureAnalyzer:
+class OrderBlockDetector:
     """
-    محلل بنية السوق لاكتشاف:
-    - Break of Structure (BOS)
-    - Change of Character (CHoCH)
-    - Market Structure Shift (MSS)
+    كاشف كتل الطلبات مع:
+    - اكتشاف Bullish/Bearish OBs
+    - تتبع الـ Mitigation
+    - تصفية حسب القوة
     """
     
-    def __init__(self, swing_lookback: int = 5):
-        self.swing_lookback = swing_lookback
+    def __init__(
+        self,
+        min_candles: int = 3,
+        max_candles: int = 10,
+        min_volume_percentile: float = 70.0
+    ):
+        self.min_candles = min_candles
+        self.max_candles = max_candles
+        self.min_volume_percentile = min_volume_percentile
         
-    def analyze(self, df: pd.DataFrame) -> Dict:
+    def detect(
+        self,
+        df: pd.DataFrame,
+        swing_points: List[Dict]
+    ) -> List[Dict]:
         """
-        تحليل بنية السوق الكامل
+        اكتشاف كتل الطلبات
         """
-        # 1. اكتشاف نقاط الأرجوحة
-        swing_points = self._find_swing_points(df)
+        order_blocks = []
         
-        # 2. تحديد الاتجاه
-        trend = self._determine_trend(swing_points)
+        # حساب percentiles الحجم
+        volume_threshold = np.percentile(df['volume'], self.min_volume_percentile)
         
-        # 3. اكتشاف BOS و CHoCH
-        bos_list = self._detect_bos(df, swing_points, trend)
-        choch_list = self._detect_choch(df, swing_points, trend)
+        # البحث عن كتل صاعدة (قبل قمم)
+        bullish_obs = self._find_bullish_obs(df, swing_points, volume_threshold)
         
-        # 4. اكتشاف MSS
-        mss = self._detect_mss(df, swing_points, trend)
+        # البحث عن كتل هابطة (قبل قيعان)
+        bearish_obs = self._find_bearish_obs(df, swing_points, volume_threshold)
         
+        # دمج النتائج
+        all_obs = bullish_obs + bearish_obs
+        
+        # تتبع الـ Mitigation
+        all_obs = self._track_mitigation(df, all_obs)
+        
+        # تحويل إلى قوائم
+        return [self._ob_to_dict(ob) for ob in all_obs]
+    
+    def _find_bullish_obs(
+        self,
+        df: pd.DataFrame,
+        swing_points: List[Dict],
+        volume_threshold: float
+    ) -> List[OrderBlock]:
+        """اكتشاف كتل الطلبات الصاعدة"""
+        obs = []
+        swing_highs = [sp for sp in swing_points if sp['type'] == 'high']
+        
+        for swing in swing_highs:
+            swing_idx = swing['index']
+            
+            # البحث عن آخر شمعة هابطة قبل القمة
+            for i in range(max(0, swing_idx - self.max_candles), swing_idx - self.min_candles + 1):
+                candle = df.iloc[i]
+                next_candle = df.iloc[i + 1] if i + 1 < len(df) else None
+                
+                # شمعة هابطة قوية
+                if candle['close'] < candle['open']:  # هابطة
+                    body_size = abs(candle['close'] - candle['open'])
+                    wick_size = candle['high'] - candle['open']
+                    
+                    # شمعة قوية مع حجم كبير
+                    if body_size > wick_size * 0.5 and candle['volume'] > volume_threshold:
+                        # التحقق من الارتداد بعدها
+                        if next_candle is not None and next_candle['close'] > candle['close']:
+                            ob = OrderBlock(
+                                index=i,
+                                top=candle['high'],
+                                bottom=candle['low'],
+                                type='bullish',
+                                volume=candle['volume'],
+                                timestamp=df.index[i]
+                            )
+                            obs.append(ob)
+                            break
+        
+        return obs
+    
+    def _find_bearish_obs(
+        self,
+        df: pd.DataFrame,
+        swing_points: List[Dict],
+        volume_threshold: float
+    ) -> List[OrderBlock]:
+        """اكتشاف كتل الطلبات الهابطة"""
+        obs = []
+        swing_lows = [sp for sp in swing_points if sp['type'] == 'low']
+        
+        for swing in swing_lows:
+            swing_idx = swing['index']
+            
+            # البحث عن آخر شمعة صاعدة قبل القاع
+            for i in range(max(0, swing_idx - self.max_candles), swing_idx - self.min_candles + 1):
+                candle = df.iloc[i]
+                next_candle = df.iloc[i + 1] if i + 1 < len(df) else None
+                
+                # شمعة صاعدة قوية
+                if candle['close'] > candle['open']:  # صاعدة
+                    body_size = abs(candle['close'] - candle['open'])
+                    wick_size = candle['close'] - candle['low']
+                    
+                    # شمعة قوية مع حجم كبير
+                    if body_size > wick_size * 0.5 and candle['volume'] > volume_threshold:
+                        # التحقق من الارتداد بعدها
+                        if next_candle is not None and next_candle['close'] < candle['close']:
+                            ob = OrderBlock(
+                                index=i,
+                                top=candle['high'],
+                                bottom=candle['low'],
+                                type='bearish',
+                                volume=candle['volume'],
+                                timestamp=df.index[i]
+                            )
+                            obs.append(ob)
+                            break
+        
+        return obs
+    
+    def _track_mitigation(
+        self,
+        df: pd.DataFrame,
+        obs: List[OrderBlock]
+    ) -> List[OrderBlock]:
+        """تتبع الـ Mitigation للكتل"""
+        for ob in obs:
+            # البحث عن اختراق الكتلة
+            for i in range(ob.index + 1, len(df)):
+                candle = df.iloc[i]
+                
+                if ob.type == 'bullish':
+                    # Mitigation: السعر يغلق أسفل الكتلة
+                    if candle['close'] < ob.bottom:
+                        ob.active = False
+                        ob.mitigation_index = i
+                        break
+                    # Partial mitigation: لمس القاع
+                    elif candle['low'] <= ob.bottom and candle['close'] >= ob.bottom:
+                        ob.active = True  # ما زالت نشطة لكن ضعيفة
+                
+                elif ob.type == 'bearish':
+                    # Mitigation: السعر يغلق أعلى الكتلة
+                    if candle['close'] > ob.top:
+                        ob.active = False
+                        ob.mitigation_index = i
+                        break
+                    # Partial mitigation: لمس القمة
+                    elif candle['high'] >= ob.top and candle['close'] <= ob.top:
+                        ob.active = True
+        
+        return obs
+    
+    def _ob_to_dict(self, ob: OrderBlock) -> Dict:
+        """تحويل الكتلة إلى قاموس"""
         return {
-            'trend': trend,
-            'swing_points': [self._swing_to_dict(sp) for sp in swing_points],
-            'bos': bos_list,
-            'choch': choch_list,
-            'mss': mss,
-            'structure_strength': self._calculate_structure_strength(bos_list, choch_list)
+            'index': ob.index,
+            'top': ob.top,
+            'bottom': ob.bottom,
+            'type': ob.type,
+            'volume': ob.volume,
+            'timestamp': ob.timestamp.isoformat(),
+            'active': ob.active,
+            'mitigation_index': ob.mitigation_index,
+            'strength': self._calculate_ob_strength(ob)
         }
     
-    def _find_swing_points(self, df: pd.DataFrame) -> List[SwingPoint]:
-        """اكتشاف نقاط الأرجوحة"""
-        swing_points = []
+    def _calculate_ob_strength(self, ob: OrderBlock) -> float:
+        """حساب قوة الكتلة"""
+        strength = 1.0
         
-        for i in range(self.swing_lookback, len(df) - self.swing_lookback):
-            # Swing High
-            if all(df['high'].iloc[i] > df['high'].iloc[i-j] for j in range(1, self.swing_lookback+1)) and \
-               all(df['high'].iloc[i] > df['high'].iloc[i+j] for j in range(1, self.swing_lookback+1)):
-                swing_points.append(SwingPoint(
-                    index=i,
-                    price=df['high'].iloc[i],
-                    type='high',
-                    timestamp=df.index[i]
-                ))
-            
-            # Swing Low
-            elif all(df['low'].iloc[i] < df['low'].iloc[i-j] for j in range(1, self.swing_lookback+1)) and \
-                 all(df['low'].iloc[i] < df['low'].iloc[i+j] for j in range(1, self.swing_lookback+1)):
-                swing_points.append(SwingPoint(
-                    index=i,
-                    price=df['low'].iloc[i],
-                    type='low',
-                    timestamp=df.index[i]
-                ))
+        # الكتل النشطة أقوى
+        if not ob.active:
+            strength *= 0.5
         
-        return swing_points
-    
-    def _determine_trend(self, swing_points: List[SwingPoint]) -> str:
-        """تحديد الاتجاه العام"""
-        if len(swing_points) < 4:
-            return "neutral"
+        # الحجم الكبير = قوة أعلى (مبسط)
+        # في التطبيق الحقيقي، قارن مع المتوسط المتحرك للحجم
         
-        # تحليل آخر 4 نقاط أرجوحة
-        recent = swing_points[-4:]
-        
-        higher_highs = recent[-1].price > recent[-3].price if recent[-1].type == 'high' else recent[-2].price > recent[-4].price
-        higher_lows = recent[-1].price > recent[-3].price if recent[-1].type == 'low' else recent[-2].price > recent[-4].price
-        
-        if higher_highs and higher_lows:
-            return "bullish"
-        elif not higher_highs and not higher_lows:
-            return "bearish"
-        else:
-            return "neutral"
-    
-    def _detect_bos(self, df: pd.DataFrame, swing_points: List[SwingPoint], trend: str) -> List[Dict]:
-        """اكتشاف Break of Structure"""
-        bos_list = []
-        
-        if len(swing_points) < 2:
-            return bos_list
-        
-        for i in range(1, len(swing_points)):
-            prev = swing_points[i-1]
-            curr = swing_points[i]
-            
-            # BOS Bullish: كسر قمة سابقة
-            if trend == "bullish" and prev.type == 'high' and curr.type == 'high':
-                if curr.price > prev.price:
-                    bos_list.append({
-                        'type': 'bullish_bos',
-                        'index': curr.index,
-                        'price': curr.price,
-                        'broken_level': prev.price,
-                        'timestamp': curr.timestamp
-                    })
-            
-            # BOS Bearish: كسر قاع سابق
-            elif trend == "bearish" and prev.type == 'low' and curr.type == 'low':
-                if curr.price < prev.price:
-                    bos_list.append({
-                        'type': 'bearish_bos',
-                        'index': curr.index,
-                        'price': curr.price,
-                        'broken_level': prev.price,
-                        'timestamp': curr.timestamp
-                    })
-        
-        return bos_list
-    
-    def _detect_choch(self, df: pd.DataFrame, swing_points: List[SwingPoint], trend: str) -> List[Dict]:
-        """اكتشاف Change of Character"""
-        choch_list = []
-        
-        if len(swing_points) < 3:
-            return choch_list
-        
-        for i in range(2, len(swing_points)):
-            # CHoCH Bullish: قاع أعلى من القاع السابق في اتجاه هابط
-            if trend == "bearish":
-                lows = [sp for sp in swing_points[max(0, i-3):i+1] if sp.type == 'low']
-                if len(lows) >= 2 and lows[-1].price > lows[-2].price:
-                    choch_list.append({
-                        'type': 'bullish_choch',
-                        'index': lows[-1].index,
-                        'price': lows[-1].price,
-                        'previous_low': lows[-2].price,
-                        'timestamp': lows[-1].timestamp
-                    })
-            
-            # CHoCH Bearish: قمة أقل من القمة السابقة في اتجاه صاعد
-            elif trend == "bullish":
-                highs = [sp for sp in swing_points[max(0, i-3):i+1] if sp.type == 'high']
-                if len(highs) >= 2 and highs[-1].price < highs[-2].price:
-                    choch_list.append({
-                        'type': 'bearish_choch',
-                        'index': highs[-1].index,
-                        'price': highs[-1].price,
-                        'previous_high': highs[-2].price,
-                        'timestamp': highs[-1].timestamp
-                    })
-        
-        return choch_list
-    
-    def _detect_mss(self, df: pd.DataFrame, swing_points: List[SwingPoint], trend: str) -> List[Dict]:
-        """اكتشاف Market Structure Shift"""
-        mss_list = []
-        
-        if len(swing_points) < 4:
-            return mss_list
-        
-        # MSS يحدث عندما يتغير الاتجاه مع كسر قمة/قاع مهم
-        recent = swing_points[-4:]
-        
-        # MSS Bullish: كسر قمة مع تغير الاتجاه
-        if trend == "bullish":
-            highs = [sp for sp in recent if sp.type == 'high']
-            if len(highs) >= 2 and highs[-1].price > highs[0].price:
-                mss_list.append({
-                    'type': 'bullish_mss',
-                    'index': highs[-1].index,
-                    'price': highs[-1].price,
-                    'timestamp': highs[-1].timestamp
-                })
-        
-        # MSS Bearish: كسر قاع مع تغير الاتجاه
-        elif trend == "bearish":
-            lows = [sp for sp in recent if sp.type == 'low']
-            if len(lows) >= 2 and lows[-1].price < lows[0].price:
-                mss_list.append({
-                    'type': 'bearish_mss',
-                    'index': lows[-1].index,
-                    'price': lows[-1].price,
-                    'timestamp': lows[-1].timestamp
-                })
-        
-        return mss_list
-    
-    def _calculate_structure_strength(self, bos: List[Dict], choch: List[Dict]) -> float:
-        """حساب قوة البنية"""
-        score = 0.0
-        
-        # BOS قوي
-        score += len(bos) * 0.15
-        
-        # CHoCH أقوى
-        score += len(cho
+        return strength
