@@ -319,4 +319,273 @@ string HandleClose(JSONObject *obj)
 }
 
 //+------------------------------------------------------------------+
-string HandleCloseAll(JSONObject
+string HandleCloseAll(JSONObject *obj)
+{
+   int closed = 0;
+   int failed = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      // Check if it's our magic number
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long pos_type = PositionGetInteger(POSITION_TYPE);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      
+      ENUM_ORDER_TYPE order_type;
+      double price;
+      
+      if(pos_type == POSITION_TYPE_BUY)
+      {
+         order_type = ORDER_TYPE_SELL;
+         price = SymbolInfoDouble(symbol, SYMBOL_BID);
+      }
+      else
+      {
+         order_type = ORDER_TYPE_BUY;
+         price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      }
+      
+      MqlTradeRequest request = {};
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = symbol;
+      request.volume = volume;
+      request.type = order_type;
+      request.position = ticket;
+      request.price = price;
+      request.deviation = 10;
+      request.type_time = ORDER_TIME_GTC;
+      request.type_filling = GetFillingMode(symbol);
+      
+      MqlTradeResult result = {};
+      if(OrderSend(request, result))
+         closed++;
+      else
+         failed++;
+   }
+   
+   return "{\"status\":\"success\",\"data\":{\"closed\":" + IntegerToString(closed) + 
+          ",\"failed\":" + IntegerToString(failed) + "}}";
+}
+
+//+------------------------------------------------------------------+
+string HandleGetPositions()
+{
+   string json = "{\"status\":\"success\",\"data\":[";
+   
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(i > 0) json += ",";
+      json += "{";
+      json += "\"ticket\":" + IntegerToString(ticket) + ",";
+      json += "\"symbol\":\"" + PositionGetString(POSITION_SYMBOL) + "\",";
+      json += "\"type\":" + IntegerToString(PositionGetInteger(POSITION_TYPE)) + ",";
+      json += "\"magic\":" + IntegerToString(PositionGetInteger(POSITION_MAGIC)) + ",";
+      json += "\"volume\":" + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ",";
+      json += "\"open_price\":" + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), 5) + ",";
+      json += "\"current_price\":" + DoubleToString(PositionGetDouble(POSITION_PRICE_CURRENT), 5) + ",";
+      json += "\"sl\":" + DoubleToString(PositionGetDouble(POSITION_SL), 5) + ",";
+      json += "\"tp\":" + DoubleToString(PositionGetDouble(POSITION_TP), 5) + ",";
+      json += "\"swap\":" + DoubleToString(PositionGetDouble(POSITION_SWAP), 2) + ",";
+      json += "\"profit\":" + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + ",";
+      json += "\"comment\":\"" + PositionGetString(POSITION_COMMENT) + "\"";
+      json += "}";
+   }
+   
+   json += "]}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+string HandleGetOrders()
+{
+   string json = "{\"status\":\"success\",\"data\":[";
+   
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(i > 0) json += ",";
+      json += "{";
+      json += "\"ticket\":" + IntegerToString(ticket) + ",";
+      json += "\"symbol\":\"" + OrderGetString(ORDER_SYMBOL) + "\",";
+      json += "\"type\":" + IntegerToString(OrderGetInteger(ORDER_TYPE)) + ",";
+      json += "\"state\":" + IntegerToString(OrderGetInteger(ORDER_STATE)) + ",";
+      json += "\"volume\":" + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 2) + ",";
+      json += "\"price\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), 5) + ",";
+      json += "\"sl\":" + DoubleToString(OrderGetDouble(ORDER_SL), 5) + ",";
+      json += "\"tp\":" + DoubleToString(OrderGetDouble(ORDER_TP), 5);
+      json += "}";
+   }
+   
+   json += "]}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+string HandleGetAccount()
+{
+   string json = "{\"status\":\"success\",\"data\":{";
+   json += "\"number\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ",";
+   json += "\"name\":\"" + AccountInfoString(ACCOUNT_NAME) + "\",";
+   json += "\"server\":\"" + AccountInfoString(ACCOUNT_SERVER) + "\",";
+   json += "\"currency\":\"" + AccountInfoString(ACCOUNT_CURRENCY) + "\",";
+   json += "\"leverage\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LEVERAGE)) + ",";
+   json += "\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2) + ",";
+   json += "\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + ",";
+   json += "\"margin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN), 2) + ",";
+   json += "\"free_margin\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + ",";
+   json += "\"margin_level\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL), 2) + ",";
+   json += "\"profit\":" + DoubleToString(AccountInfoDouble(ACCOUNT_PROFIT), 2);
+   json += "}}";
+   
+   return json;
+}
+
+//+------------------------------------------------------------------+
+string HandleGetHistory(JSONObject *obj)
+{
+   datetime from_date = obj.has("from") ? obj.getInt("from") : 0;
+   datetime to_date = obj.has("to") ? obj.getInt("to") : TimeCurrent();
+   
+   HistorySelect(from_date, to_date);
+   
+   string json = "{\"status\":\"success\",\"data\":[";
+   
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(i > 0) json += ",";
+      json += "{";
+      json += "\"ticket\":" + IntegerToString(ticket) + ",";
+      json += "\"symbol\":\"" + HistoryDealGetString(ticket, DEAL_SYMBOL) + "\",";
+      json += "\"type\":" + IntegerToString(HistoryDealGetInteger(ticket, DEAL_TYPE)) + ",";
+      json += "\"entry\":" + IntegerToString(HistoryDealGetInteger(ticket, DEAL_ENTRY)) + ",";
+      json += "\"volume\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_VOLUME), 2) + ",";
+      json += "\"price\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PRICE), 5) + ",";
+      json += "\"profit\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PROFIT), 2) + ",";
+      json += "\"time\":" + IntegerToString(HistoryDealGetInteger(ticket, DEAL_TIME));
+      json += "}";
+   }
+   
+   json += "]}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+string HandleModify(JSONObject *obj)
+{
+   int ticket = obj.getInt("ticket");
+   double sl = obj.has("sl") ? obj.getDouble("sl") : 0;
+   double tp = obj.has("tp") ? obj.getDouble("tp") : 0;
+   
+   if(!PositionSelectByTicket(ticket))
+      return CreateErrorResponse("Position not found");
+   
+   MqlTradeRequest request = {};
+   request.action = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.sl = sl;
+   request.tp = tp;
+   
+   MqlTradeResult result = {};
+   if(!OrderSend(request, result))
+      return CreateErrorResponse("Modify failed: " + IntegerToString(GetLastError()));
+   
+   return "{\"status\":\"success\",\"data\":{\"ticket\":" + IntegerToString(ticket) + "}}";
+}
+
+//+------------------------------------------------------------------+
+string HandlePartialClose(JSONObject *obj)
+{
+   int ticket = obj.getInt("ticket");
+   double volume = obj.getDouble("volume");
+   
+   if(!PositionSelectByTicket(ticket))
+      return CreateErrorResponse("Position not found");
+   
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   long pos_type = PositionGetInteger(POSITION_TYPE);
+   double pos_volume = PositionGetDouble(POSITION_VOLUME);
+   
+   if(volume >= pos_volume)
+      return CreateErrorResponse("Close volume >= position volume");
+   
+   ENUM_ORDER_TYPE order_type;
+   double price;
+   
+   if(pos_type == POSITION_TYPE_BUY)
+   {
+      order_type = ORDER_TYPE_SELL;
+      price = SymbolInfoDouble(symbol, SYMBOL_BID);
+   }
+   else
+   {
+      order_type = ORDER_TYPE_BUY;
+      price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   }
+   
+   MqlTradeRequest request = {};
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = symbol;
+   request.volume = volume;
+   request.type = order_type;
+   request.position = ticket;
+   request.price = price;
+   request.deviation = 10;
+   request.type_time = ORDER_TIME_GTC;
+   request.type_filling = GetFillingMode(symbol);
+   
+   MqlTradeResult result = {};
+   if(!OrderSend(request, result))
+      return CreateErrorResponse("Partial close failed: " + IntegerToString(GetLastError()));
+   
+   return "{\"status\":\"success\",\"data\":{\"ticket\":" + IntegerToString(result.order) + 
+          ",\"remaining_volume\":" + DoubleToString(pos_volume - volume, 2) + "}}";
+}
+
+//+------------------------------------------------------------------+
+string CreateErrorResponse(string error)
+{
+   return "{\"status\":\"error\",\"error\":\"" + error + "\"}";
+}
+
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES StringToTimeFrame(string tf)
+{
+   if(tf == "M1") return PERIOD_M1;
+   if(tf == "M5") return PERIOD_M5;
+   if(tf == "M15") return PERIOD_M15;
+   if(tf == "M30") return PERIOD_M30;
+   if(tf == "H1") return PERIOD_H1;
+   if(tf == "H4") return PERIOD_H4;
+   if(tf == "D1") return PERIOD_D1;
+   if(tf == "W1") return PERIOD_W1;
+   if(tf == "MN1") return PERIOD_MN1;
+   return PERIOD_CURRENT;
+}
+
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string symbol)
+{
+   uint filling = (uint)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   
+   if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   
+   if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   
+   return ORDER_FILLING_RETURN;
+}
+//+------------------------------------------------------------------+
