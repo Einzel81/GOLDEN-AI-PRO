@@ -81,4 +81,4 @@ mypy==1.7.1
 # Technical Analysis (بديل عن TA-Lib)
 # ============================================
 # pip install ta-lib يحتاج compile، نستخدم بديل:
-pandas-ta==0.3.14b
+pandas-ta==0.3.14
