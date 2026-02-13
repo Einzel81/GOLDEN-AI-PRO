@@ -1,1 +1,152 @@
+version: '3.8'
 
+services:
+  # API Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: golden-ai-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/golden_ai
+      - REDIS_URL=redis://redis:6379/0
+      - MT5_ENABLED=true
+      - MT5_HOST=host.docker.internal
+    volumes:
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      - timescaledb
+      - redis
+      - mlflow
+    networks:
+      - golden-ai-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Dashboard
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: golden-ai-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - golden-ai-network
+
+  # TimescaleDB for time-series data
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: golden-ai-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=golden_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    networks:
+      - golden-ai-network
+
+  # Redis for caching and pub/sub
+  redis:
+    image: redis:7-alpine
+    container_name: golden-ai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - golden-ai-network
+
+  # MLflow for model tracking
+  mlflow:
+    image: python:3.10-slim
+    container_name: golden-ai-mlflow
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    command: >
+      bash -c "pip install mlflow && mlflow server --host 0.0.0.0 --port 5000 
+      --backend-store-uri postgresql://postgres:password@timescaledb:5432/mlflow 
+      --default-artifact-root /mlflow/artifacts"
+    volumes:
+      - mlflow_data:/mlflow/artifacts
+    depends_on:
+      - timescaledb
+    networks:
+      - golden-ai-network
+
+  # Jupyter for research
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    container_name: golden-ai-jupyter
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./src:/home/jovyan/src
+      - ./data:/home/jovyan/data
+    networks:
+      - golden-ai-network
+
+  # Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: golden-ai-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - golden-ai-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: golden-ai-grafana
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - golden-ai-network
+
+volumes:
+  timescale_data:
+  redis_data:
+  mlflow_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  golden-ai-network:
+    driver: bridge
