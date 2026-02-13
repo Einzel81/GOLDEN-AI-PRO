@@ -8,7 +8,12 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 import logging
-from MetaTrader5 import *
+import sys
+if sys.platform == 'win32':
+    from MetaTrader5 import *
+else:
+    from .mt5_mock import *
+    print("⚠️  Running in Linux Mode - Using Mock MT5")
 
 logger = logging.getLogger(__name__)
 
