@@ -112,4 +112,91 @@ class LiquidityAnalyzer:
         # 2. القرب من السعر الحالي (أقرب = أقوى)
         # 3. الحجم عند اللمسات
         
-        touch_factor = min(touches / 5, 1.0
+        touch_factor = min(touches / 5, 1.0)  # تطبيع
+        
+        current_price = df['close'].iloc[-1]
+        distance = abs(current_price - level) / current_price
+        proximity_factor = max(0, 1 - distance * 100)  # كلما كان أقرب، أقوى
+        
+        # يمكن إضافة عامل الحجم هنا
+        
+        return (touch_factor * 0.6 + proximity_factor * 0.4)
+    
+    def _find_equal_levels(self, df: pd.DataFrame) -> List[LiquidityPool]:
+        """البحث عن مستويات متساوية (Equal Highs/Lows)"""
+        pools = []
+        tolerance = 0.0005  # 0.05% للذهب
+        
+        # البحث عن قمم متساوية
+        highs = df['high'].values
+        for i in range(len(highs)):
+            for j in range(i+1, min(i+20, len(highs))):
+                if abs(highs[i] - highs[j]) <= highs[i] * tolerance:
+                    strength = 0.7  # قوة جيدة لـ Equal Highs
+                    pools.append(LiquidityPool(
+                        price_level=highs[i],
+                        type='high',
+                        strength=strength
+                    ))
+        
+        # البحث عن قيعان متساوية
+        lows = df['low'].values
+        for i in range(len(lows)):
+            for j in range(i+1, min(i+20, len(lows))):
+                if abs(lows[i] - lows[j]) <= lows[i] * tolerance:
+                    strength = 0.7
+                    pools.append(LiquidityPool(
+                        price_level=lows[i],
+                        type='low',
+                        strength=strength
+                    ))
+        
+        return pools
+    
+    def _detect_sweeps(
+        self,
+        df: pd.DataFrame,
+        levels: List[LiquidityPool]
+    ) -> tuple:
+        """اكتشاف الـ Liquidity Sweeps"""
+        swept_highs = []
+        swept_lows = []
+        
+        if len(df) < 3:
+            return swept_highs, swept_lows
+        
+        # آخر 3 شمعات للتحقق
+        recent = df.iloc[-3:]
+        
+        for level in levels:
+            if level.type == 'high':
+                # Sweep: اختراق القمة ثم العودة
+                if any(recent['high'] > level.price_level) and \
+                   recent['close'].iloc[-1] < level.price_level:
+                    swept_highs.append(level.price_level)
+                    
+            elif level.type == 'low':
+                # Sweep: اختراق القاع ثم العودة
+                if any(recent['low'] < level.price_level) and \
+                   recent['close'].iloc[-1] > level.price_level:
+                    swept_lows.append(level.price_level)
+        
+        return swept_highs, swept_lows
+    
+    def _find_strongest_level(self, levels: List[LiquidityPool]) -> Optional[Dict]:
+        """العثور على أقوى مستوى"""
+        if not levels:
+            return None
+        
+        strongest = max(levels, key=lambda x: x.strength)
+        return self._level_to_dict(strongest)
+    
+    def _level_to_dict(self, level: LiquidityPool) -> Dict:
+        """تحويل إلى قاموس"""
+        return {
+            'price': level.price_level,
+            'type': level.type,
+            'strength': level.strength,
+            'swept': level.swept,
+            'sweep_time': level.sweep_timestamp.isoformat() if level.sweep_timestamp else None
+        }
